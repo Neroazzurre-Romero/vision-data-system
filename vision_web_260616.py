@@ -165,8 +165,12 @@ def save_data_append(df):
         if current_df.empty:
             sheet.append_row(EXCEL_COLUMNS)
             
-        df = df.fillna("")
-        sheet.append_rows(df.values.tolist())
+        # 💡 JSON 에러(Timedelta, Numpy 등) 원천 차단: 모든 데이터를 문자열로 캐스팅
+        # 구글 시트에 value_input_option='USER_ENTERED'로 보내면 시트가 알아서 숫자/날짜로 파싱함
+        df_safe = df.copy()
+        df_safe = df_safe.astype(str).replace(["nan", "NaT", "None", "<NA>", "NaN"], "")
+        
+        sheet.append_rows(df_safe.values.tolist(), value_input_option='USER_ENTERED')
         
         load_data.clear() 
         return True
@@ -182,9 +186,13 @@ def save_data_overwrite(df):
     if sheet is None: return False
     try:
         sheet.clear()
-        df = df.fillna("")
-        data_to_upload = [list(df.columns)] + df.values.tolist()
-        sheet.append_rows(data_to_upload)
+        
+        # 💡 JSON 에러(Timedelta, Numpy 등) 원천 차단
+        df_safe = df.copy()
+        df_safe = df_safe.astype(str).replace(["nan", "NaT", "None", "<NA>", "NaN"], "")
+        
+        data_to_upload = [list(df_safe.columns)] + df_safe.values.tolist()
+        sheet.append_rows(data_to_upload, value_input_option='USER_ENTERED')
         
         load_data.clear()
         return True
@@ -585,6 +593,11 @@ if st.session_state.current_page == "input":
                                 # 누락된 필수 컬럼들 빈 값(또는 0)으로 초기화
                                 num_cols = ["휴동시간", "소요시간", "검사수량", "양품수량", "양품수량(전,배 포함)", "불량수량", "완전불량", "전면불량", "배면불량", "옵셋불량", "수량부족", "기타"]
                                 rate_cols = ["양품율", "양품율(전/배 포함)", "전면 불량율", "배면 불량율"]
+                                
+                                # 💡 [추가 방어] 엑셀에서 넘어온 휴동/소요시간이 특수 시간(Timedelta) 객체일 경우 '분(Minute)' 단위 정수로 변환
+                                for c in ["휴동시간", "소요시간"]:
+                                    if c in import_df.columns:
+                                        import_df[c] = import_df[c].apply(lambda x: x.total_seconds() / 60 if pd.notnull(x) and 'Timedelta' in str(type(x)) else x)
                                 
                                 for col in EXCEL_COLUMNS:
                                     if col not in import_df.columns:
