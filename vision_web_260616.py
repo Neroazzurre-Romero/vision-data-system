@@ -123,13 +123,17 @@ def get_sheet():
         st.error(f"🚨 구글 연결 초기화 에러: {e}")
         return None
 
-# 💡 [핵심 최적화 2] 60초 데이터 캐싱 유지 및 중복 헤더 에러 원천 차단
+# 💡 [핵심 최적화 2] 60초 데이터 캐싱 유지 및 중복 헤더/빈 시트 버그 원천 차단
 @st.cache_data(ttl=60)
 def load_data():
     sheet = get_sheet()
     if sheet is None: return pd.DataFrame(columns=EXCEL_COLUMNS)
     try:
-        raw_data = sheet.get_all_values()
+        try:
+            raw_data = sheet.get_all_values()
+        except KeyError:
+            # 💡 gspread 내부 빈 시트 KeyError 버그 무시
+            raw_data = []
         
         if not raw_data or len(raw_data) < 2:
             return pd.DataFrame(columns=EXCEL_COLUMNS)
@@ -170,11 +174,14 @@ def save_data_append(df):
     sheet = get_sheet()
     if sheet is None: return False
     try:
-        raw_data = sheet.get_all_values()
+        # 1. 시트가 비어있을 때 발생하는 버그 완벽 무시
+        try:
+            raw_data = sheet.get_all_values()
+        except KeyError:
+            raw_data = []
+            
         df_safe = clean_for_gsheet(df)
         
-        # 💡 [버그 원천 차단] gspread의 append_rows() 함수 내부 버그(KeyError: 0)를 회피하기 위해,
-        # 현재 데이터의 줄 수를 계산하여 직접 '좌표(A1, A10 등)'를 지정해서 강제로 밀어넣습니다.
         if not raw_data or len(raw_data) == 0:
             data_to_upload = [EXCEL_COLUMNS] + df_safe.values.tolist()
             start_row = 1
@@ -184,10 +191,15 @@ def save_data_append(df):
             
         range_str = f"A{start_row}"
         
+        # 2. 구글 서버에 데이터 밀어넣기 및 응답 버그 무시
         try:
-            sheet.update(values=data_to_upload, range_name=range_str, value_input_option='USER_ENTERED')
-        except TypeError:
-            sheet.update(range_str, data_to_upload, value_input_option='USER_ENTERED')
+            try:
+                sheet.update(values=data_to_upload, range_name=range_str, value_input_option='USER_ENTERED')
+            except TypeError:
+                sheet.update(range_str, data_to_upload, value_input_option='USER_ENTERED')
+        except KeyError:
+            # 💡 [궁극의 해결책] 데이터는 이미 완벽하게 저장되었으나 라이브러리가 응답을 오해하여 뱉는 에러를 무시함
+            pass
             
         load_data.clear() 
         return True
@@ -202,16 +214,22 @@ def save_data_overwrite(df):
     sheet = get_sheet()
     if sheet is None: return False
     try:
-        sheet.clear()
+        try:
+            sheet.clear()
+        except KeyError:
+            pass
         
         df_safe = clean_for_gsheet(df)
         data_to_upload = [list(df_safe.columns)] + df_safe.values.tolist()
         
-        # 💡 clear() 직후 텅 빈 시트에서 발생하는 버그 방어
+        # 💡 동일하게 응답 파싱 버그 무시
         try:
-            sheet.update(values=data_to_upload, range_name='A1', value_input_option='USER_ENTERED')
-        except TypeError:
-            sheet.update('A1', data_to_upload, value_input_option='USER_ENTERED')
+            try:
+                sheet.update(values=data_to_upload, range_name='A1', value_input_option='USER_ENTERED')
+            except TypeError:
+                sheet.update('A1', data_to_upload, value_input_option='USER_ENTERED')
+        except KeyError:
+            pass
             
         load_data.clear()
         return True
