@@ -1,5 +1,6 @@
 import streamlit as st
 import pandas as pd
+import numpy as np
 import plotly.express as px
 import plotly.graph_objects as go
 import json
@@ -100,7 +101,7 @@ if "google_credentials" not in st.secrets:
     st.info("Streamlit Cloud Settings -> Secrets에 JSON 키를 정확히 입력했는지 확인해주세요.")
     st.stop()
 
-# 💡 [핵심 최적화 1] 구글 API 연결 객체 자체를 영구 캐싱 (중복 접속 완전 차단)
+# 💡 [핵심 최적화 1] 구글 API 연결 객체 자체를 영구 캐싱
 @st.cache_resource
 def get_sheet():
     try:
@@ -157,6 +158,14 @@ def load_data():
             st.error(f"🚨 데이터 로드 접근 에러: [{type(e).__name__}] {str(e)}")
         return pd.DataFrame(columns=EXCEL_COLUMNS)
 
+# 💡 [초강력 방어막] JSON 통신 오류 유발자(nan, inf) 원천 세탁 함수
+def clean_for_gsheet(df):
+    df_clean = df.copy()
+    for col in df_clean.columns:
+        # 모든 셀을 텍스트로 변환하고, 에러 유발 문자열은 빈칸으로 파괴
+        df_clean[col] = df_clean[col].apply(lambda x: "" if str(x).strip().lower() in ["nan", "nat", "none", "<na>", "inf", "-inf"] else str(x))
+    return df_clean
+
 def save_data_append(df):
     sheet = get_sheet()
     if sheet is None: return False
@@ -165,13 +174,10 @@ def save_data_append(df):
         if current_df.empty:
             sheet.append_row(EXCEL_COLUMNS)
             
-        # 💡 JSON 에러(Timedelta, Numpy 등) 원천 차단: 모든 데이터를 문자열로 캐스팅
-        # 구글 시트에 value_input_option='USER_ENTERED'로 보내면 시트가 알아서 숫자/날짜로 파싱함
-        df_safe = df.copy()
-        df_safe = df_safe.astype(str).replace(["nan", "NaT", "None", "<NA>", "NaN"], "")
+        # 💡 강제 세탁된 무결점 데이터를 구글로 전송
+        df_safe = clean_for_gsheet(df)
         
         sheet.append_rows(df_safe.values.tolist(), value_input_option='USER_ENTERED')
-        
         load_data.clear() 
         return True
     except Exception as e:
@@ -187,13 +193,11 @@ def save_data_overwrite(df):
     try:
         sheet.clear()
         
-        # 💡 JSON 에러(Timedelta, Numpy 등) 원천 차단
-        df_safe = df.copy()
-        df_safe = df_safe.astype(str).replace(["nan", "NaT", "None", "<NA>", "NaN"], "")
+        # 💡 강제 세탁된 무결점 데이터를 구글로 전송
+        df_safe = clean_for_gsheet(df)
         
         data_to_upload = [list(df_safe.columns)] + df_safe.values.tolist()
         sheet.append_rows(data_to_upload, value_input_option='USER_ENTERED')
-        
         load_data.clear()
         return True
     except Exception as e:
