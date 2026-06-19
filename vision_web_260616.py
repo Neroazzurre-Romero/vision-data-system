@@ -128,8 +128,6 @@ def load_data():
     sheet = get_sheet()
     if sheet is None: return pd.DataFrame(columns=EXCEL_COLUMNS)
     try:
-        # 기존 get_all_records()는 시트에 쓰레기 데이터나 중복 헤더가 있으면 뻗어버림.
-        # 따라서 get_all_values()를 사용해 순수 값만 가져온 후 Pandas로 안전하게 조립함.
         raw_data = sheet.get_all_values()
         
         if not raw_data or len(raw_data) < 2:
@@ -140,11 +138,9 @@ def load_data():
         
         df = pd.DataFrame(rows, columns=headers)
         
-        # 우리가 필요로 하는 EXCEL_COLUMNS만 쏙쏙 뽑아오기 (중복 헤더 등 쓰레기 데이터 무시)
         result_df = pd.DataFrame()
         for col in EXCEL_COLUMNS:
             if col in df.columns:
-                # 동일한 이름의 헤더가 여러 개 있을 경우 첫 번째 컬럼만 안전하게 추출
                 if isinstance(df[col], pd.DataFrame):
                     result_df[col] = df[col].iloc[:, 0]
                 else:
@@ -165,7 +161,6 @@ def save_data_append(df):
     sheet = get_sheet()
     if sheet is None: return False
     try:
-        # 불필요한 sheet.get_all_values() 대신 안전하게 캐시된 데이터를 확인 (API 통신 0회)
         current_df = load_data()
         if current_df.empty:
             sheet.append_row(EXCEL_COLUMNS)
@@ -173,7 +168,7 @@ def save_data_append(df):
         df = df.fillna("")
         sheet.append_rows(df.values.tolist())
         
-        load_data.clear() # 다음번에 새 데이터를 불러오도록 캐시 비우기
+        load_data.clear() 
         return True
     except Exception as e:
         if "429" in str(e):
@@ -238,7 +233,6 @@ def render_analysis_page():
         st.session_state.current_page = "input"
         st.rerun()
         
-    # 💡 에러 방지를 위해 원본을 보호하고 복사본(copy)으로 분석 진행
     df = load_data().copy()
     if df.empty:
         st.warning("분석할 저장된 데이터가 없습니다.")
@@ -493,20 +487,50 @@ if st.session_state.current_page == "input":
                                 st.error(f"🚨 '{target_sheet}' 시트에서 표의 제목(헤더) 줄을 찾을 수 없습니다.")
                             else:
                                 import_df = pd.read_excel(xls, sheet_name=target_sheet, header=target_header_idx)
-                                import_df.columns = import_df.columns.astype(str).str.replace(r'[\n\r\s]+', '', regex=True)
                                 
-                                # 2. 컬럼명 표준화
-                                rename_map = {
-                                    "휴동": "휴동시간", "소요": "소요시간", "검사": "검사수량",
-                                    "양품": "양품수량", "불량": "불량수량", "완전": "완전불량",
-                                    "전면": "전면불량", "배면": "배면불량", "옵셋": "옵셋불량",
-                                    "수량": "수량부족", "모델": "모델명",
-                                    "양품율(전/배포함)": "양품율(전/배 포함)", 
-                                    "양품율(전,배포함)": "양품율(전/배 포함)", 
-                                    "양품수량(전/배포함)": "양품수량(전,배 포함)",
-                                    "양품수량(전,배포함)": "양품수량(전,배 포함)"
-                                }
-                                import_df.rename(columns=rename_map, inplace=True)
+                                # 💡 2. 컬럼명 표준화 (부분 일치 스마트 매핑 엔진)
+                                def smart_map_column(c):
+                                    c = str(c).replace('\n', '').replace('\r', '').replace(' ', '')
+                                    if '모델' in c: return '모델명'
+                                    if '날짜' in c or '일자' in c: return '날짜'
+                                    if '교대' in c: return '교대'
+                                    if '시작' in c: return '시작시간'
+                                    if '종료' in c: return '종료시간'
+                                    if '휴동' in c: return '휴동시간'
+                                    if '소요' in c: return '소요시간'
+                                    if '도금' in c: return '도금구분'
+                                    if '호기' in c: return '호기'
+                                    if '검사' in c: return '검사수량'
+                                    
+                                    # 전,배 포함 우선 처리
+                                    if '전/배' in c or '전,배' in c:
+                                        if '율' in c or '수율' in c: return '양품율(전/배 포함)'
+                                        else: return '양품수량(전,배 포함)'
+                                        
+                                    if '양품' in c:
+                                        if '율' in c or '수율' in c: return '양품율'
+                                        else: return '양품수량'
+                                        
+                                    if '불량수량' in c or ('불량' in c and '수량' in c): return '불량수량'
+                                    
+                                    if '완전' in c: return '완전불량'
+                                    if '전면' in c and '율' not in c: return '전면불량'
+                                    if '배면' in c and '율' not in c: return '배면불량'
+                                    if '옵셋' in c or '오프셋' in c: return '옵셋불량'
+                                    
+                                    if '부족' in c: return '수량부족'
+                                    if '기타' in c: return '기타'
+                                    
+                                    if 'OQC' in c.upper(): return 'OQC'
+                                    if '비고' in c: return '비고'
+                                    if '도장일' in c: return '도장일'
+                                    if 'LINE' in c.upper() or '라인' in c: return '도장 Line'
+                                    if '작업자' in c or '성명' in c or '이름' in c: return '작업자'
+                                    
+                                    if '구분' in c: return '구분'
+                                    return c
+                                
+                                import_df.columns = [smart_map_column(c) for c in import_df.columns]
                                 
                                 # 데이터가 없는 빈 줄이나 요약 줄(합계, 평균 등) 제거
                                 import_df = import_df.dropna(subset=['날짜', '모델명'])
