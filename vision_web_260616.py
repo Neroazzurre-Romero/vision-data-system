@@ -162,44 +162,41 @@ def load_data():
             st.error(f"🚨 데이터 로드 접근 에러: [{type(e).__name__}] {str(e)}")
         return pd.DataFrame(columns=EXCEL_COLUMNS)
 
-# 💡 [초강력 방어막] JSON 통신 오류 유발자(nan, inf) 원천 세탁 함수
-def clean_for_gsheet(df):
-    df_clean = df.copy()
-    for col in df_clean.columns:
-        # 모든 셀을 텍스트로 변환하고, 에러 유발 문자열은 빈칸으로 파괴
-        df_clean[col] = df_clean[col].apply(lambda x: "" if str(x).strip().lower() in ["nan", "nat", "none", "<na>", "inf", "-inf"] else str(x))
-    return df_clean
-
+# 💡 [작업자님 아이디어 전면 적용] 1:1 컬럼 수동 매칭 및 순수 텍스트 조립 시스템
 def save_data_append(df):
     sheet = get_sheet()
     if sheet is None: return False
     try:
-        # 1. 시트가 비어있을 때 발생하는 버그 완벽 무시
+        # 1. 시트가 비어있는지 확인 (버그 회피를 위해 안전하게 row_values 사용)
         try:
-            raw_data = sheet.get_all_values()
-        except KeyError:
-            raw_data = []
-            
-        df_safe = clean_for_gsheet(df)
-        
-        if not raw_data or len(raw_data) == 0:
-            data_to_upload = [EXCEL_COLUMNS] + df_safe.values.tolist()
-            start_row = 1
-        else:
-            data_to_upload = df_safe.values.tolist()
-            start_row = len(raw_data) + 1
-            
-        range_str = f"A{start_row}"
-        
-        # 2. 구글 서버에 데이터 밀어넣기 및 응답 버그 무시
+            header_check = sheet.row_values(1)
+        except Exception:
+            header_check = []
+
+        if not header_check:
+            # 헤더가 아예 없으면 1순위로 헤더부터 꽂아 넣음
+            sheet.append_row(EXCEL_COLUMNS, value_input_option='USER_ENTERED')
+
+        # 2. 파이썬 DataFrame 구조를 버리고, 순수한 1차원 리스트(배열)로 데이터 한 줄씩 직접 조립
+        records_to_insert = []
+        for _, row in df.iterrows():
+            row_data = []
+            for col in EXCEL_COLUMNS:
+                val = row.get(col, "")
+                str_val = str(val).strip()
+                # nan, inf 등 통신 에러 유발자는 완벽한 빈칸으로 변경
+                if str_val.lower() in ["nan", "nat", "none", "<na>", "inf", "-inf"]:
+                    str_val = ""
+                row_data.append(str_val)
+            records_to_insert.append(row_data)
+
+        # 3. 조립된 데이터를 한 번에 시트에 삽입 (이중 안전장치 적용)
         try:
-            try:
-                sheet.update(values=data_to_upload, range_name=range_str, value_input_option='USER_ENTERED')
-            except TypeError:
-                sheet.update(range_str, data_to_upload, value_input_option='USER_ENTERED')
-        except KeyError:
-            # 💡 [궁극의 해결책] 데이터는 이미 완벽하게 저장되었으나 라이브러리가 응답을 오해하여 뱉는 에러를 무시함
-            pass
+            sheet.append_rows(records_to_insert, value_input_option='USER_ENTERED')
+        except Exception:
+            # 만약 여러 줄 삽입에서 에러가 나면, 무식하지만 가장 확실하게 '한 줄씩' 꽂아 넣음
+            for r_data in records_to_insert:
+                sheet.append_row(r_data, value_input_option='USER_ENTERED')
             
         load_data.clear() 
         return True
@@ -216,20 +213,26 @@ def save_data_overwrite(df):
     try:
         try:
             sheet.clear()
-        except KeyError:
+        except Exception:
             pass
         
-        df_safe = clean_for_gsheet(df)
-        data_to_upload = [list(df_safe.columns)] + df_safe.values.tolist()
+        # 💡 [사용자 아이디어 적용] 첫 줄은 무조건 헤더, 나머지는 1:1 수동 매칭 조립
+        records_to_insert = [EXCEL_COLUMNS] 
+        for _, row in df.iterrows():
+            row_data = []
+            for col in EXCEL_COLUMNS:
+                val = row.get(col, "")
+                str_val = str(val).strip()
+                if str_val.lower() in ["nan", "nat", "none", "<na>", "inf", "-inf"]:
+                    str_val = ""
+                row_data.append(str_val)
+            records_to_insert.append(row_data)
         
-        # 💡 동일하게 응답 파싱 버그 무시
+        # 데이터 전체 덮어쓰기
         try:
-            try:
-                sheet.update(values=data_to_upload, range_name='A1', value_input_option='USER_ENTERED')
-            except TypeError:
-                sheet.update('A1', data_to_upload, value_input_option='USER_ENTERED')
-        except KeyError:
-            pass
+            sheet.update(values=records_to_insert, range_name='A1', value_input_option='USER_ENTERED')
+        except TypeError:
+            sheet.update('A1', records_to_insert, value_input_option='USER_ENTERED')
             
         load_data.clear()
         return True
