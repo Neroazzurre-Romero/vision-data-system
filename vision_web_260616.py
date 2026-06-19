@@ -170,14 +170,22 @@ def save_data_append(df):
     sheet = get_sheet()
     if sheet is None: return False
     try:
-        current_df = load_data()
-        if current_df.empty:
-            sheet.append_row(EXCEL_COLUMNS)
-            
-        # 💡 강제 세탁된 무결점 데이터를 구글로 전송
+        raw_data = sheet.get_all_values()
         df_safe = clean_for_gsheet(df)
         
-        sheet.append_rows(df_safe.values.tolist(), value_input_option='USER_ENTERED')
+        if not raw_data or len(raw_data) == 0:
+            # 💡 시트가 완전히 비어있을 때 발생하는 라이브러리 버그(KeyError: 0) 완벽 차단!
+            # append 대신 강제로 A1 셀부터 헤더와 데이터를 동시에 '직접 쓰기'
+            data_to_upload = [EXCEL_COLUMNS] + df_safe.values.tolist()
+            try:
+                sheet.update(values=data_to_upload, range_name='A1', value_input_option='USER_ENTERED')
+            except TypeError:
+                # gspread 버전 호환성 방어
+                sheet.update('A1', data_to_upload, value_input_option='USER_ENTERED')
+        else:
+            # 기존 데이터가 존재하면 정상적으로 이어붙이기
+            sheet.append_rows(df_safe.values.tolist(), value_input_option='USER_ENTERED')
+            
         load_data.clear() 
         return True
     except Exception as e:
@@ -193,11 +201,15 @@ def save_data_overwrite(df):
     try:
         sheet.clear()
         
-        # 💡 강제 세탁된 무결점 데이터를 구글로 전송
         df_safe = clean_for_gsheet(df)
-        
         data_to_upload = [list(df_safe.columns)] + df_safe.values.tolist()
-        sheet.append_rows(data_to_upload, value_input_option='USER_ENTERED')
+        
+        # 💡 clear() 직후 텅 빈 시트에서 발생하는 버그 방어
+        try:
+            sheet.update(values=data_to_upload, range_name='A1', value_input_option='USER_ENTERED')
+        except TypeError:
+            sheet.update('A1', data_to_upload, value_input_option='USER_ENTERED')
+            
         load_data.clear()
         return True
     except Exception as e:
