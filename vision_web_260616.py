@@ -463,35 +463,39 @@ if st.session_state.current_page == "input":
         # 📥 외부 엑셀 데이터 대량 업로드
         # ==========================================
         st.markdown("<br><hr>", unsafe_allow_html=True)
-        with st.expander("📤 외부 엑셀 데이터 업로드 (대량 추가)", expanded=False):
+        with st.expander("📤 외부 엑셀 데이터 업로드 (스마트 인식 기능 탑재)", expanded=False):
+            st.info("💡 엑셀 상단에 복잡한 서식이나 요약표가 있어도 시스템이 진짜 데이터가 시작되는 표를 자동으로 찾아냅니다.")
             uploaded_file = st.file_uploader("엑셀 파일(.xlsx) 선택", type=['xlsx'])
             if uploaded_file is not None:
+                xls = pd.ExcelFile(uploaded_file)
+                sheet_names = xls.sheet_names
+                
+                # 'Q' 나 '년'이 포함된 데이터 시트를 1순위로 자동 추천 (예: 2026년 1Q)
+                recommended_sheet = next((s for s in sheet_names if 'Q' in s or '년' in s), sheet_names[0])
+                target_sheet = st.selectbox("📂 데이터가 있는 시트 선택", sheet_names, index=sheet_names.index(recommended_sheet))
+                
                 if st.button("구글 스프레드시트에 대량 저장", type="primary", use_container_width=True):
-                    with st.spinner("데이터를 분석하고 구글 서버에 전송 중입니다..."):
+                    with st.spinner("데이터 서식을 해독하고 구글 서버에 전송 중입니다..."):
                         try:
-                            uploaded_file.seek(0)
-                            xls = pd.ExcelFile(uploaded_file)
-                            target_sheet = None
+                            # 💡 1. 엑셀 상단 서식 무시하고 진짜 헤더(제목줄) 찾기 (최대 100줄 깊이까지 탐색)
+                            temp_df = pd.read_excel(xls, sheet_name=target_sheet, header=None, nrows=100)
                             target_header_idx = None
                             
-                            for s_name in xls.sheet_names:
-                                try:
-                                    temp_df = pd.read_excel(xls, sheet_name=s_name, header=None, nrows=50)
-                                    for idx, row in temp_df.iterrows():
-                                        row_str = row.astype(str).str.replace(r'[\n\r\s]+', '', regex=True)
-                                        if sum(row_str.str.contains('날짜')) > 0 and sum(row_str.str.contains('모델')) > 0:
-                                            target_sheet = s_name
-                                            target_header_idx = idx
-                                            break
-                                    if target_sheet is not None: break
-                                except: continue
+                            for idx, row in temp_df.iterrows():
+                                row_str = row.astype(str).str.replace(r'[\n\r\s]+', '', regex=True)
+                                # '날짜', '교대', '모델' 키워드가 2개 이상 있는 줄을 진짜 데이터 표의 시작점으로 간주!
+                                match_count = sum([1 for kw in ['날짜', '교대', '모델', '시작'] if sum(row_str.str.contains(kw)) > 0])
+                                if match_count >= 2:
+                                    target_header_idx = idx
+                                    break
                                     
-                            if target_sheet is None:
-                                st.error("🚨 엑셀 파일 내 '날짜'와 '모델명' 항목이 있는 표를 찾을 수 없습니다.")
+                            if target_header_idx is None:
+                                st.error(f"🚨 '{target_sheet}' 시트에서 표의 제목(헤더) 줄을 찾을 수 없습니다.")
                             else:
                                 import_df = pd.read_excel(xls, sheet_name=target_sheet, header=target_header_idx)
                                 import_df.columns = import_df.columns.astype(str).str.replace(r'[\n\r\s]+', '', regex=True)
                                 
+                                # 2. 컬럼명 표준화
                                 rename_map = {
                                     "휴동": "휴동시간", "소요": "소요시간", "검사": "검사수량",
                                     "양품": "양품수량", "불량": "불량수량", "완전": "완전불량",
@@ -503,21 +507,58 @@ if st.session_state.current_page == "input":
                                     "양품수량(전,배포함)": "양품수량(전,배 포함)"
                                 }
                                 import_df.rename(columns=rename_map, inplace=True)
+                                
+                                # 데이터가 없는 빈 줄이나 요약 줄(합계, 평균 등) 제거
                                 import_df = import_df.dropna(subset=['날짜', '모델명'])
                                 import_df = import_df[~import_df['날짜'].astype(str).str.contains('합계|총계|평균', na=False)]
-                                import_df['날짜'] = pd.to_datetime(import_df['날짜'], errors='coerce').dt.strftime("%Y-%m-%d")
+                                
+                                # 💡 3. 스마트 번역기 1: 날짜 포맷 통일 (26.06.19 등 다양한 형식을 2026-06-19 로 변환)
+                                def parse_smart_date(d_val):
+                                    d_str = str(d_val).strip()
+                                    if d_str in ('nan', 'NaT', 'None', ''): return None
+                                    if len(d_str.split('.')) == 3 and len(d_str.split('.')[0]) == 2:
+                                        d_str = "20" + d_str  # 26.x.x 를 2026.x.x 로
+                                    try: return pd.to_datetime(d_str).strftime("%Y-%m-%d")
+                                    except: return None
+                                
+                                import_df['날짜'] = import_df['날짜'].apply(parse_smart_date)
                                 import_df = import_df.dropna(subset=['날짜']) 
                                 
-                                def format_time(row, col):
-                                    val = str(row.get(col, '')).strip()
-                                    if val in ('nan', 'NaT', 'None', ''): return f"{row['날짜']} 00:00"
-                                    if len(val) <= 8: return f"{row['날짜']} {val[:5]}"
-                                    try: return pd.to_datetime(val).strftime("%Y-%m-%d %H:%M")
-                                    except: return val
+                                # 💡 4. 스마트 번역기 2: 시간 포맷 통일 (오전/오후/시/분 한글 변환 완벽 대응)
+                                def parse_smart_time(t_val, date_val):
+                                    t_str = str(t_val).strip()
+                                    if t_str in ('nan', 'NaT', 'None', ''): return f"{date_val} 00:00"
+                                    if len(t_str) > 10 and '-' in t_str:
+                                        try: return pd.to_datetime(t_str).strftime("%Y-%m-%d %H:%M")
+                                        except: return t_str
+                                    
+                                    t_str_clean = t_str.replace('오전', 'AM').replace('오후', 'PM').replace('시', ':00').replace('분', '').replace(' ', '')
+                                    try: 
+                                        parsed_time = pd.to_datetime(t_str_clean).strftime("%H:%M")
+                                        return f"{date_val} {parsed_time}"
+                                    except: 
+                                        if len(t_str) <= 5: return f"{date_val} {t_str}"
+                                        return f"{date_val} 00:00"
                                             
-                                import_df['시작시간'] = import_df.apply(lambda x: format_time(x, '시작시간'), axis=1)
-                                import_df['종료시간'] = import_df.apply(lambda x: format_time(x, '종료시간'), axis=1)
+                                import_df['시작시간'] = import_df.apply(lambda x: parse_smart_time(x.get('시작시간'), x['날짜']), axis=1)
+                                import_df['종료시간'] = import_df.apply(lambda x: parse_smart_time(x.get('종료시간'), x['날짜']), axis=1)
                                 
+                                # 💡 5. 스마트 번역기 3: 엑셀 속 제각각인 모델명을 시스템 표준(드롭다운)으로 강제 매핑 변환!
+                                def parse_smart_model(m_val):
+                                    m_str = str(m_val).upper().replace(' ', '')
+                                    if 'CENTAUR' in m_str or 'D51' in m_str: return 'Centaur'
+                                    if 'MEM' in m_str or 'D53' in m_str: return 'MEM'
+                                    if 'SPHINX' in m_str or 'D31P' in m_str: return 'Sphinx-E'
+                                    if 'BANFF' in m_str or 'D14' in m_str: return 'Banff'
+                                    if 'KRIOS' in m_str: return 'Krios'
+                                    if 'AV-J' in m_str or 'D33C' in m_str: return 'AV-J'
+                                    if 'SEATTLE' in m_str: return 'Seattle'
+                                    if 'JULIET' in m_str: return 'Juliet-O'
+                                    return str(m_val) # 알 수 없는 모델은 원본 텍스트 유지
+                                
+                                import_df['모델명'] = import_df['모델명'].apply(parse_smart_model)
+                                
+                                # 누락된 필수 컬럼들 빈 값(또는 0)으로 초기화
                                 num_cols = ["휴동시간", "소요시간", "검사수량", "양품수량", "양품수량(전,배 포함)", "불량수량", "완전불량", "전면불량", "배면불량", "옵셋불량", "수량부족", "기타"]
                                 rate_cols = ["양품율", "양품율(전/배 포함)", "전면 불량율", "배면 불량율"]
                                 
@@ -530,12 +571,12 @@ if st.session_state.current_page == "input":
                                 import_df = import_df[EXCEL_COLUMNS]
                                 
                                 if save_data_append(import_df):
-                                    st.success(f"✅ {len(import_df)}건의 데이터가 구글 스프레드시트에 영구 저장되었습니다!")
+                                    st.success(f"✅ 스마트 분석 성공! [{target_sheet}] 시트에서 데이터 {len(import_df)}건을 추출해 DB에 영구 저장했습니다!")
                                     import time
-                                    time.sleep(1.5)
+                                    time.sleep(2)
                                     st.rerun()
                         except Exception as e:
-                            st.error(f"데이터 업로드 중 오류 발생: {e}")
+                            st.error(f"데이터 업로드 및 스마트 분석 중 오류 발생: {e}")
 
         # ==========================================
         st.markdown("<br>", unsafe_allow_html=True)
