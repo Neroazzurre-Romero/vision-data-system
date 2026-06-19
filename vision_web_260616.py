@@ -122,16 +122,38 @@ def get_sheet():
         st.error(f"🚨 구글 연결 초기화 에러: {e}")
         return None
 
-# 💡 [핵심 최적화 2] 60초 데이터 캐싱 유지
+# 💡 [핵심 최적화 2] 60초 데이터 캐싱 유지 및 중복 헤더 에러 원천 차단
 @st.cache_data(ttl=60)
 def load_data():
     sheet = get_sheet()
     if sheet is None: return pd.DataFrame(columns=EXCEL_COLUMNS)
     try:
-        records = sheet.get_all_records()
-        if not records:
+        # 기존 get_all_records()는 시트에 쓰레기 데이터나 중복 헤더가 있으면 뻗어버림.
+        # 따라서 get_all_values()를 사용해 순수 값만 가져온 후 Pandas로 안전하게 조립함.
+        raw_data = sheet.get_all_values()
+        
+        if not raw_data or len(raw_data) < 2:
             return pd.DataFrame(columns=EXCEL_COLUMNS)
-        return pd.DataFrame(records)
+            
+        headers = [str(h).strip() for h in raw_data[0]]
+        rows = raw_data[1:]
+        
+        df = pd.DataFrame(rows, columns=headers)
+        
+        # 우리가 필요로 하는 EXCEL_COLUMNS만 쏙쏙 뽑아오기 (중복 헤더 등 쓰레기 데이터 무시)
+        result_df = pd.DataFrame()
+        for col in EXCEL_COLUMNS:
+            if col in df.columns:
+                # 동일한 이름의 헤더가 여러 개 있을 경우 첫 번째 컬럼만 안전하게 추출
+                if isinstance(df[col], pd.DataFrame):
+                    result_df[col] = df[col].iloc[:, 0]
+                else:
+                    result_df[col] = df[col]
+            else:
+                result_df[col] = ""
+                
+        return result_df
+        
     except Exception as e:
         if "429" in str(e):
             st.warning("⏳ 구글 서버 요청 한도를 초과했습니다. 딱 1분만 기다렸다가 다시 시도해주세요!")
