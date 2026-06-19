@@ -173,18 +173,21 @@ def save_data_append(df):
         raw_data = sheet.get_all_values()
         df_safe = clean_for_gsheet(df)
         
+        # 💡 [버그 원천 차단] gspread의 append_rows() 함수 내부 버그(KeyError: 0)를 회피하기 위해,
+        # 현재 데이터의 줄 수를 계산하여 직접 '좌표(A1, A10 등)'를 지정해서 강제로 밀어넣습니다.
         if not raw_data or len(raw_data) == 0:
-            # 💡 시트가 완전히 비어있을 때 발생하는 라이브러리 버그(KeyError: 0) 완벽 차단!
-            # append 대신 강제로 A1 셀부터 헤더와 데이터를 동시에 '직접 쓰기'
             data_to_upload = [EXCEL_COLUMNS] + df_safe.values.tolist()
-            try:
-                sheet.update(values=data_to_upload, range_name='A1', value_input_option='USER_ENTERED')
-            except TypeError:
-                # gspread 버전 호환성 방어
-                sheet.update('A1', data_to_upload, value_input_option='USER_ENTERED')
+            start_row = 1
         else:
-            # 기존 데이터가 존재하면 정상적으로 이어붙이기
-            sheet.append_rows(df_safe.values.tolist(), value_input_option='USER_ENTERED')
+            data_to_upload = df_safe.values.tolist()
+            start_row = len(raw_data) + 1
+            
+        range_str = f"A{start_row}"
+        
+        try:
+            sheet.update(values=data_to_upload, range_name=range_str, value_input_option='USER_ENTERED')
+        except TypeError:
+            sheet.update(range_str, data_to_upload, value_input_option='USER_ENTERED')
             
         load_data.clear() 
         return True
