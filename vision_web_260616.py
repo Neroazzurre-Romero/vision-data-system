@@ -560,24 +560,11 @@ if st.session_state.current_page == "input":
                                 import_df['날짜'] = import_df['날짜'].apply(parse_smart_date)
                                 import_df = import_df.dropna(subset=['날짜']) 
                                 
-                                # 💡 4. 스마트 번역기 2: 시간 포맷 통일 (오전/오후/시/분 한글 변환 완벽 대응)
-                                def parse_smart_time(t_val, date_val):
-                                    t_str = str(t_val).strip()
-                                    if t_str in ('nan', 'NaT', 'None', ''): return f"{date_val} 00:00"
-                                    if len(t_str) > 10 and '-' in t_str:
-                                        try: return pd.to_datetime(t_str).strftime("%Y-%m-%d %H:%M")
-                                        except: return t_str
-                                    
-                                    t_str_clean = t_str.replace('오전', 'AM').replace('오후', 'PM').replace('시', ':00').replace('분', '').replace(' ', '')
-                                    try: 
-                                        parsed_time = pd.to_datetime(t_str_clean).strftime("%H:%M")
-                                        return f"{date_val} {parsed_time}"
-                                    except: 
-                                        if len(t_str) <= 5: return f"{date_val} {t_str}"
-                                        return f"{date_val} 00:00"
-                                            
-                                import_df['시작시간'] = import_df.apply(lambda x: parse_smart_time(x.get('시작시간'), x['날짜']), axis=1)
-                                import_df['종료시간'] = import_df.apply(lambda x: parse_smart_time(x.get('종료시간'), x['날짜']), axis=1)
+                                # 💡 [사용자 요청] 시간 관련 항목(시작/종료/휴동/소요시간)은 엑셀 데이터를 무시하고 빈칸/0 으로 초기화
+                                import_df['시작시간'] = ""
+                                import_df['종료시간'] = ""
+                                import_df['휴동시간'] = 0
+                                import_df['소요시간'] = 0
                                 
                                 # 💡 5. 스마트 번역기 3: 엑셀 속 제각각인 모델명을 시스템 표준(드롭다운)으로 강제 매핑 변환!
                                 def parse_smart_model(m_val):
@@ -597,11 +584,6 @@ if st.session_state.current_page == "input":
                                 # 누락된 필수 컬럼들 빈 값(또는 0)으로 초기화
                                 num_cols = ["휴동시간", "소요시간", "검사수량", "양품수량", "양품수량(전,배 포함)", "불량수량", "완전불량", "전면불량", "배면불량", "옵셋불량", "수량부족", "기타"]
                                 rate_cols = ["양품율", "양품율(전/배 포함)", "전면 불량율", "배면 불량율"]
-                                
-                                # 💡 [추가 방어] 엑셀에서 넘어온 휴동/소요시간이 특수 시간(Timedelta) 객체일 경우 '분(Minute)' 단위 정수로 변환
-                                for c in ["휴동시간", "소요시간"]:
-                                    if c in import_df.columns:
-                                        import_df[c] = import_df[c].apply(lambda x: x.total_seconds() / 60 if pd.notnull(x) and 'Timedelta' in str(type(x)) else x)
                                 
                                 for col in EXCEL_COLUMNS:
                                     if col not in import_df.columns:
