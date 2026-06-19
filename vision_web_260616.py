@@ -102,7 +102,18 @@ if "google_credentials" not in st.secrets:
 
 def get_gsheet_client():
     try:
-        creds_dict = json.loads(st.secrets["google_credentials"])
+        creds_data = st.secrets["google_credentials"]
+        
+        # 문자열(String) 형태일 경우 JSON 파싱, 이미 딕셔너리일 경우 그대로 사용 (충돌 방지)
+        if isinstance(creds_data, str):
+            creds_dict = json.loads(creds_data)
+        else:
+            creds_dict = dict(creds_data)
+            
+        # private_key 내부의 이스케이프된 줄바꿈 문자열(\n)을 실제 줄바꿈으로 강제 변환 (핵심 해결책)
+        if "private_key" in creds_dict:
+            creds_dict["private_key"] = creds_dict["private_key"].replace('\\n', '\n')
+
         creds = Credentials.from_service_account_info(creds_dict, scopes=SCOPE)
         return gspread.authorize(creds)
     except Exception as e:
