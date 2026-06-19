@@ -110,7 +110,6 @@ def get_gsheet_client():
                 creds_dict = json.loads(clean_data, strict=False)
             except Exception as je:
                 st.error(f"🔑 JSON 형식 에러 (입력값 오류): {je}")
-                st.info(f"입력된 키 샘플: {clean_data[:50]}...")
                 return None
         else:
             creds_dict = dict(creds_data)
@@ -124,6 +123,8 @@ def get_gsheet_client():
         st.error(f"🚨 구글 인증 상세 에러: [{type(e).__name__}] {str(e)}")
         return None
 
+# 💡 캐싱 적용: 60초 동안 데이터를 기억하여 불필요한 구글 서버 요청(429 에러) 방지
+@st.cache_data(ttl=60)
 def load_data():
     client = get_gsheet_client()
     if not client: return pd.DataFrame(columns=EXCEL_COLUMNS)
@@ -149,6 +150,9 @@ def save_data_append(df):
             sheet.append_row(EXCEL_COLUMNS)
         df = df.fillna("")
         sheet.append_rows(df.values.tolist())
+        
+        # 💡 저장 후 캐시 비우기 (다음 번엔 최신 데이터를 불러오도록 강제)
+        load_data.clear() 
         return True
     except Exception as e:
         st.error(f"🚨 데이터 저장 오류 상세: [{type(e).__name__}] {str(e)}")
@@ -163,6 +167,9 @@ def save_data_overwrite(df):
         df = df.fillna("")
         data_to_upload = [list(df.columns)] + df.values.tolist()
         sheet.append_rows(data_to_upload)
+        
+        # 💡 저장 후 캐시 비우기
+        load_data.clear()
         return True
     except Exception as e:
         st.error(f"🚨 데이터 덮어쓰기 오류 상세: [{type(e).__name__}] {str(e)}")
