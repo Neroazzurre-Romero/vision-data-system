@@ -100,17 +100,15 @@ if "google_credentials" not in st.secrets:
     st.info("Streamlit Cloud Settings -> Secrets에 JSON 키를 정확히 입력했는지 확인해주세요.")
     st.stop()
 
-def get_gsheet_client():
+# 💡 [핵심 최적화 1] 구글 API 연결 객체 자체를 영구 캐싱 (중복 접속 완전 차단)
+@st.cache_resource
+def get_sheet():
     try:
         creds_data = st.secrets["google_credentials"]
         
         if isinstance(creds_data, str):
             clean_data = creds_data.strip().strip("'").strip('"')
-            try:
-                creds_dict = json.loads(clean_data, strict=False)
-            except Exception as je:
-                st.error(f"🔑 JSON 형식 에러 (입력값 오류): {je}")
-                return None
+            creds_dict = json.loads(clean_data, strict=False)
         else:
             creds_dict = dict(creds_data)
             
@@ -118,61 +116,66 @@ def get_gsheet_client():
             creds_dict["private_key"] = creds_dict["private_key"].replace('\\n', '\n')
 
         creds = Credentials.from_service_account_info(creds_dict, scopes=SCOPE)
-        return gspread.authorize(creds)
+        client = gspread.authorize(creds)
+        return client.open(SHEET_NAME).sheet1
     except Exception as e:
-        st.error(f"🚨 구글 인증 상세 에러: [{type(e).__name__}] {str(e)}")
+        st.error(f"🚨 구글 연결 초기화 에러: {e}")
         return None
 
-# 💡 캐싱 적용: 60초 동안 데이터를 기억하여 불필요한 구글 서버 요청(429 에러) 방지
+# 💡 [핵심 최적화 2] 60초 데이터 캐싱 유지
 @st.cache_data(ttl=60)
 def load_data():
-    client = get_gsheet_client()
-    if not client: return pd.DataFrame(columns=EXCEL_COLUMNS)
+    sheet = get_sheet()
+    if sheet is None: return pd.DataFrame(columns=EXCEL_COLUMNS)
     try:
-        sheet = client.open(SHEET_NAME).sheet1
         records = sheet.get_all_records()
         if not records:
             return pd.DataFrame(columns=EXCEL_COLUMNS)
         return pd.DataFrame(records)
-    except gspread.exceptions.SpreadsheetNotFound:
-        st.error(f"구글 드라이브에서 '{SHEET_NAME}' 스프레드시트를 찾을 수 없습니다. 파일 이름과 이메일 공유 설정을 확인해주세요.")
-        return pd.DataFrame(columns=EXCEL_COLUMNS)
     except Exception as e:
-        st.error(f"🚨 데이터 로드 접근 에러: [{type(e).__name__}] {str(e)}")
+        if "429" in str(e):
+            st.warning("⏳ 구글 서버 요청 한도를 초과했습니다. 딱 1분만 기다렸다가 다시 시도해주세요!")
+        else:
+            st.error(f"🚨 데이터 로드 접근 에러: [{type(e).__name__}] {str(e)}")
         return pd.DataFrame(columns=EXCEL_COLUMNS)
 
 def save_data_append(df):
-    client = get_gsheet_client()
-    if not client: return False
+    sheet = get_sheet()
+    if sheet is None: return False
     try:
-        sheet = client.open(SHEET_NAME).sheet1
-        if not sheet.get_all_values():
+        # 불필요한 sheet.get_all_values() 대신 안전하게 캐시된 데이터를 확인 (API 통신 0회)
+        current_df = load_data()
+        if current_df.empty:
             sheet.append_row(EXCEL_COLUMNS)
+            
         df = df.fillna("")
         sheet.append_rows(df.values.tolist())
         
-        # 💡 저장 후 캐시 비우기 (다음 번엔 최신 데이터를 불러오도록 강제)
-        load_data.clear() 
+        load_data.clear() # 다음번에 새 데이터를 불러오도록 캐시 비우기
         return True
     except Exception as e:
-        st.error(f"🚨 데이터 저장 오류 상세: [{type(e).__name__}] {str(e)}")
+        if "429" in str(e):
+            st.error("🚨 너무 잦은 저장으로 구글 서버가 일시 차단했습니다. 1분 후 저장해주세요.")
+        else:
+            st.error(f"🚨 데이터 저장 오류 상세: [{type(e).__name__}] {str(e)}")
         return False
 
 def save_data_overwrite(df):
-    client = get_gsheet_client()
-    if not client: return False
+    sheet = get_sheet()
+    if sheet is None: return False
     try:
-        sheet = client.open(SHEET_NAME).sheet1
         sheet.clear()
         df = df.fillna("")
         data_to_upload = [list(df.columns)] + df.values.tolist()
         sheet.append_rows(data_to_upload)
         
-        # 💡 저장 후 캐시 비우기
         load_data.clear()
         return True
     except Exception as e:
-        st.error(f"🚨 데이터 덮어쓰기 오류 상세: [{type(e).__name__}] {str(e)}")
+        if "429" in str(e):
+            st.error("🚨 너무 잦은 변경으로 구글 서버가 일시 차단했습니다. 1분 후 덮어쓰기 해주세요.")
+        else:
+            st.error(f"🚨 데이터 덮어쓰기 오류 상세: [{type(e).__name__}] {str(e)}")
         return False
 
 # ----------------------------------------------------
@@ -213,7 +216,8 @@ def render_analysis_page():
         st.session_state.current_page = "input"
         st.rerun()
         
-    df = load_data()
+    # 💡 에러 방지를 위해 원본을 보호하고 복사본(copy)으로 분석 진행
+    df = load_data().copy()
     if df.empty:
         st.warning("분석할 저장된 데이터가 없습니다.")
         return
@@ -386,7 +390,7 @@ if st.session_state.current_page == "input":
         st.markdown("<br><br><hr>", unsafe_allow_html=True)
         st.write("📊 백업 및 보관용")
         
-        export_df = load_data()
+        export_df = load_data().copy()
         if not export_df.empty:
             output = BytesIO()
             with pd.ExcelWriter(output, engine='openpyxl') as writer:
@@ -667,7 +671,7 @@ if st.session_state.current_page == "input":
 
     st.markdown("---") 
     with st.expander("📋 최근 저장 데이터 List (구글 시트 연동중 - 수정 가능)", expanded=True):
-        df_history = load_data()
+        df_history = load_data().copy()
         if not df_history.empty:
             recent_10 = df_history.iloc[::-1].head(10).copy()
             valid_cols = [col for col in EXCEL_COLUMNS if col in recent_10.columns]
@@ -684,7 +688,7 @@ if st.session_state.current_page == "input":
                 st.info("💡 데이터가 변경되었습니다. 값을 수정한 후 아래 덮어쓰기 버튼을 눌러주세요.")
                 if st.button("🔄 변경된 데이터 구글 시트에 덮어쓰기", type="primary"):
                     with st.spinner("구글 스프레드시트에 데이터를 덮어쓰는 중입니다..."):
-                        df_full = load_data()
+                        df_full = load_data().copy()
                         changes_applied = False
                         
                         for idx in edited_df.index:
